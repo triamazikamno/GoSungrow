@@ -68,7 +68,11 @@ func (e *EndPoint) Login(auth *SunGrowAuth) error {
 			UserPassword: valueTypes.SetStringValue(auth.UserPassword),
 		}
 		e.Request.RequestCommon = api.RequestCommon{
-			Appkey:  auth.AppKey,
+			Appkey: auth.AppKey,
+			ApiKeyParam: api.ApiKeyParam{
+				Timestamp: time.Now().UnixMilli(),
+				Nonce:     api.GenerateRandomWord(32),
+			},
 			SysCode: "900",
 		}
 

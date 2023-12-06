@@ -112,6 +112,10 @@ func (sg *SunGrow) GetEndpoint(ae string) api.EndPoint {
 				Token:     sg.GetToken(),
 				UserId:    sg.GetUserId(),
 				ValidFlag: "1,3",
+				ApiKeyParam: api.ApiKeyParam{
+					Timestamp: time.Now().UnixMilli(),
+					Nonce:     api.GenerateRandomWord(32),
+				},
 			})
 		}
 	}

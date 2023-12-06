@@ -1,13 +1,25 @@
 package api
 
 import (
+	"crypto/aes"
+	cryptorand "crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
 	"github.com/MickMake/GoSungrow/iSolarCloud/api/GoStruct"
 	"github.com/MickMake/GoSungrow/iSolarCloud/api/GoStruct/output"
 	"github.com/MickMake/GoUnify/Only"
 	"github.com/MickMake/GoUnify/cmdPath"
+	"github.com/andreburgaud/crypt2go/ecb"
+	"github.com/andreburgaud/crypt2go/padding"
 	"io"
+	"math/rand"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"time"
+	"unsafe"
 
 	"bytes"
 	"encoding/json"
@@ -102,7 +114,116 @@ func (w *Web) Get(endpoint EndPoint) EndPoint {
 	return endpoint
 }
 
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const (
+	letterIdxBits = 6                    // 6 bits to represent a letter index
+	letterIdxMask = 1<<letterIdxBits - 1 // All 1-bits, as many as letterIdxBits
+	letterIdxMax  = 63 / letterIdxBits   // # of letter indices fitting in 63 bits
+)
+
+var src = rand.NewSource(time.Now().UnixNano())
+
+func GenerateRandomWord(n int) string {
+	b := make([]byte, n)
+	// A src.Int63() generates 63 random bits, enough for letterIdxMax characters!
+	for i, cache, remain := n-1, src.Int63(), letterIdxMax; i >= 0; {
+		if remain == 0 {
+			cache, remain = src.Int63(), letterIdxMax
+		}
+		if idx := int(cache & letterIdxMask); idx < len(letterBytes) {
+			b[i] = letterBytes[idx]
+			i--
+		}
+		cache >>= letterIdxBits
+		remain--
+	}
+
+	return *(*string)(unsafe.Pointer(&b))
+}
+
+func encryptAES(data, key []byte) ([]byte, error) {
+
+	if len(key) != 16 {
+		return nil, fmt.Errorf("key must be 16 characters long")
+	}
+
+	cipher, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create cipher: %w", err)
+	}
+
+	enc := ecb.NewECBEncrypter(cipher)
+	padder := padding.NewPkcs7Padding(cipher.BlockSize())
+	data, err = padder.Pad(data)
+	if err != nil {
+		return nil, fmt.Errorf("unable to pad data: %w", err)
+	}
+	result := make([]byte, len(data))
+	enc.CryptBlocks(result, data)
+	hexResult := make([]byte, hex.EncodedLen(len(result)))
+	hex.Encode(hexResult, result)
+
+	return hexResult, nil
+}
+
+func decryptAES(data, key []byte) ([]byte, error) {
+	encrypted := make([]byte, hex.DecodedLen(len(data)))
+	if _, err := hex.Decode(encrypted, data); err != nil {
+		return nil, fmt.Errorf("failed to decode hex: %w", err)
+	}
+	cipher, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create cipher: %w", err)
+	}
+	dec := ecb.NewECBDecrypter(cipher)
+	plaintext := make([]byte, len(encrypted))
+	dec.CryptBlocks(plaintext, encrypted)
+	padder := padding.NewPkcs7Padding(cipher.BlockSize())
+	plaintext, err = padder.Unpad(plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("unable to unpad data: %w", err)
+	}
+	return plaintext, nil
+}
+
+func encryptRSA(value []byte, key *rsa.PublicKey) (string, error) {
+	encrypted, err := rsa.EncryptPKCS1v15(cryptorand.Reader, key, value)
+	if err != nil {
+		return "", fmt.Errorf("failed to encrypt: %w", err)
+	}
+	return base64.URLEncoding.EncodeToString(encrypted), nil
+}
+
+func extractUserToken(endpoint EndPoint) (string, error) {
+	r := reflect.ValueOf(endpoint.RequestRef())
+	token := reflect.Indirect(r).FieldByName("Token").String()
+	if token == "" {
+		return "", errors.New("empty token")
+	}
+	i := strings.Index(token, "_")
+	if i == -1 || i > len(token)-1 {
+		return "", errors.New("malformed token")
+	}
+	return token[:i], nil
+}
+
+const PUB_KEY = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkecphb6vgsBx4LJknKKes-eyj7-RKQ3fikF5B67EObZ3t4moFZyMGuuJPiadYdaxvRqtxyblIlVM7omAasROtKRhtgKwwRxo2a6878qBhTgUVlsqugpI_7ZC9RmO2Rpmr8WzDeAapGANfHN5bVr7G7GYGwIrjvyxMrAVit_oM4wIDAQAB"
+const ACCESS_KEY = "9grzgbmxdsp3arfmmgq347xjbza4ysps"
+
 func (w *Web) getApi(endpoint EndPoint) ([]byte, error) {
+	parsedKey, err := base64.URLEncoding.DecodeString(PUB_KEY)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse pem: %w", err)
+	}
+	publicKeyInterface, err := x509.ParsePKIXPublicKey(parsedKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
+	}
+	publicKey, isRSAPublicKey := publicKeyInterface.(*rsa.PublicKey)
+	if !isRSAPublicKey {
+		return nil, fmt.Errorf("failed to assert public key: %w", err)
+	}
+
 	for range Only.Once {
 		request := endpoint.RequestRef()
 		w.Error = GoStruct.VerifyOptionsRequired(request)
@@ -127,11 +248,36 @@ func (w *Web) getApi(endpoint EndPoint) ([]byte, error) {
 		if w.Error != nil {
 			break
 		}
-
-		w.httpResponse, w.Error = http.Post(postUrl, "application/json", bytes.NewBuffer(j))
+		randomKey := []byte("web" + GenerateRandomWord(13))
+		var data []byte
+		data, w.Error = encryptAES(j, randomKey)
 		if w.Error != nil {
 			break
 		}
+		var req *http.Request
+		req, w.Error = http.NewRequest(http.MethodPost, postUrl, bytes.NewBuffer(data))
+		if w.Error != nil {
+			break
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-access-key", ACCESS_KEY)
+		var secretKey string
+		secretKey, w.Error = encryptRSA(randomKey, publicKey)
+		if w.Error != nil {
+			break
+		}
+		req.Header.Set("x-random-secret-key", secretKey)
+
+		if token, err := extractUserToken(endpoint); err == nil {
+			var limitObj string
+			limitObj, w.Error = encryptRSA([]byte(token), publicKey)
+			if w.Error != nil {
+				break
+			}
+			req.Header.Set("x-limit-obj", limitObj)
+		}
+
+		w.httpResponse, w.Error = w.client.Do(req)
 
 		if w.httpResponse.StatusCode == 401 {
 			w.Error = errors.New(w.httpResponse.Status)
@@ -153,6 +299,8 @@ func (w *Web) getApi(endpoint EndPoint) ([]byte, error) {
 		if w.Error != nil {
 			break
 		}
+		w.Body, w.Error = decryptAES(w.Body, randomKey)
+		w.Body = bytes.TrimSpace(w.Body)
 	}
 
 	return w.Body, w.Error

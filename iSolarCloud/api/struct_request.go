@@ -7,21 +7,25 @@ import (
 	"strings"
 )
 
-
 type Request struct {
 	RequestCommon
 }
 
-type RequestCommon struct {
-	Appkey     string `json:"appkey" required:"true"`
-	Lang       string `json:"lang"`
-	SysCode    string `json:"sys_code" required:"true"`
-	Token      string `json:"token"`
-	UserId     string `json:"user_id"`
-	ValidFlag  string `json:"valid_flag"`
-	// DeviceType string `json:"device_type"`
+type ApiKeyParam struct {
+	Timestamp int64  `json:"timestamp" required:"true"`
+	Nonce     string `json:"nonce" required:"true"`
 }
 
+type RequestCommon struct {
+	Appkey      string      `json:"appkey" required:"true"`
+	Lang        string      `json:"lang"`
+	SysCode     string      `json:"sys_code" required:"true"`
+	Token       string      `json:"token"`
+	UserId      string      `json:"user_id"`
+	ValidFlag   string      `json:"valid_flag"`
+	ApiKeyParam ApiKeyParam `json:"api_key_param"`
+	// DeviceType string `json:"device_type"`
+}
 
 func (req RequestCommon) IsValid() error {
 	var err error
@@ -62,6 +66,7 @@ func (req RequestCommon) String() string {
 	ret += fmt.Sprintf("Lang:\t%s\n", req.Lang)
 	ret += fmt.Sprintf("SysCode:\t%s\n", req.SysCode)
 	ret += fmt.Sprintf("ValidFlag:\t%s\n", req.ValidFlag)
+	ret += fmt.Sprintf("ApiKeyParam:\t%+v\n", req.ApiKeyParam)
 	return ret
 }
 
